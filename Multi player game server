@@ -1,4 +1,6 @@
 #server.js
+npm init -y
+npm install express ws mongoose bcrypt jsonwebtoken
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
