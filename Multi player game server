@@ -1,0 +1,212 @@
+#server.js
+const express = require('express');
+const http = require('http');
+const WebSocket = require('ws');
+const mongoose = require('mongoose');
+const jwt = require('jsonwebtoken');
+const { authenticateToken } = require('./auth');
+const { findMatch } = require('./game');
+
+const app = express();
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+
+// Connect to MongoDB
+mongoose.connect('mongodb://localhost/game', {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+});
+
+app.use(express.json());
+
+app.post('/login', (req, res) => {
+    // Handle player login (see auth.js)
+});
+
+app.post('/register', (req, res) => {
+    // Handle player registration (see auth.js)
+});
+
+// WebSocket game logic
+wss.on('connection', (ws) => {
+    ws.on('message', (message) => {
+        const data = JSON.parse(message);
+        switch (data.type) {
+            case 'authenticate':
+                jwt.verify(data.token, 'secretkey', (err, user) => {
+                    if (err) return ws.send(JSON.stringify({ type: 'error', message: 'Authentication failed' }));
+                    ws.user = user;
+                    findMatch(ws);
+                });
+                break;
+
+            case 'move':
+                // Handle real-time game movement (e.g., update player positions)
+                break;
+        }
+    });
+
+    ws.on('close', () => {
+        // Handle player disconnect logic
+    });
+});
+
+server.listen(8080, () => {
+    console.log('Server running on http://localhost:8080');
+});
+#auth.js
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const User = require('./models/user');
+
+// Registration logic
+async function register(req, res) {
+    const { username, password } = req.body;
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const newUser = new User({ username, password: hashedPassword });
+    await newUser.save();
+    
+    const token = jwt.sign({ username: newUser.username }, 'secretkey');
+    res.json({ token });
+}
+
+// Login logic
+async function login(req, res) {
+    const { username, password } = req.body;
+    const user = await User.findOne({ username });
+
+    if (user && await bcrypt.compare(password, user.password)) {
+        const token = jwt.sign({ username: user.username }, 'secretkey');
+        res.json({ token });
+    } else {
+        res.status(400).json({ message: 'Invalid credentials' });
+    }
+}
+
+module.exports = { login, register };
+#game.js
+const activeGames = [];
+const waitingPlayers = [];
+
+function findMatch(ws) {
+    if (waitingPlayers.length > 0) {
+        const opponent = waitingPlayers.pop();
+        startGame(ws, opponent);
+    } else {
+        waitingPlayers.push(ws);
+        ws.send(JSON.stringify({ type: 'waiting', message: 'Waiting for an opponent...' }));
+    }
+}
+
+function startGame(player1, player2) {
+    const game = { player1, player2, gameState: {} };
+    activeGames.push(game);
+
+    player1.send(JSON.stringify({ type: 'start', opponent: player2.user.username }));
+    player2.send(JSON.stringify({ type: 'start', opponent: player1.user.username }));
+
+    // Initialize game logic, e.g., sync initial game state
+}
+
+module.exports = { findMatch };
+#models/ user js
+const mongoose = require('mongoose');
+
+const userSchema = new mongoose.Schema({
+    username: { type: String, unique: true },
+    password: { type: String },
+    wins: { type: Number, default: 0 },
+    losses: { type: Number, default: 0 }
+});
+
+module.exports = mongoose.model('User', userSchema);
+#fronted (html,css, javascript)
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multiplayer Game</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="login">
+        <h1>Login</h1>
+        <form id="loginForm">
+            <input type="text" id="username" placeholder="Username" required>
+            <input type="password" id="password" placeholder="Password" required>
+            <button type="submit">Login</button>
+        </form>
+        <p>Don't have an account? <a href="#" id="showRegister">Register</a></p>
+    </div>
+
+    <div id="game" style="display:none;">
+        <h1>Welcome, <span id="playerName"></span></h1>
+        <p id="status">Waiting for opponent...</p>
+        <canvas id="gameCanvas" width="800" height="600"></canvas>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
+#css styling
+body {
+    font-family: Arial, sans-serif;
+    text-align: center;
+}
+
+#login, #game {
+    margin-top: 50px;
+}
+
+canvas {
+    border: 1px solid black;
+}
+#javascript client -side logic
+let socket;
+let token;
+
+document.getElementById("loginForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+
+    const username = document.getElementById("username").value;
+    const password = document.getElementById("password").value;
+
+    const response = await fetch("/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password })
+    });
+
+    const data = await response.json();
+    if (data.token) {
+        token = data.token;
+        document.getElementById("login").style.display = "none";
+        document.getElementById("game").style.display = "block";
+        document.getElementById("playerName").textContent = username;
+
+        startGame();
+    } else {
+        alert("Login failed");
+    }
+});
+
+function startGame() {
+    socket = new WebSocket("ws://localhost:8080");
+
+    socket.onopen = () => {
+        socket.send(JSON.stringify({ type: 'authenticate', token }));
+    };
+
+    socket.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'start') {
+            document.getElementById("status").textContent = `Playing against ${data.opponent}`;
+        } else if (data.type === 'waiting') {
+            document.getElementById("status").textContent = data.message;
+        }
+    };
+}
+
+
